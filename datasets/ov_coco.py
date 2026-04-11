@@ -24,57 +24,14 @@ class OVCocoDetection(torchvision.datasets.CocoDetection):
         self.all_categories = {
             k["id"]: k["name"] for k in self.coco.dataset["categories"]
         }
-        # --- THESIS: Textual Concept Expansion for COCO ---
-        raw_categories = [self.all_categories[k] for k in sorted(self.all_categories.keys())]
         
-        COCO_SEMANTICS = {
-            'person': 'a human person standing or sitting', 'bicycle': 'a two-wheeled bicycle vehicle',
-            'car': 'a passenger car vehicle on a road', 'motorcycle': 'a motorized two-wheeled motorcycle',
-            'airplane': 'a flying airplane in the sky or on a runway', 'bus': 'a large passenger bus vehicle',
-            'train': 'a locomotive train on railroad tracks', 'truck': 'a large cargo truck vehicle',
-            'boat': 'a boat or ship on water', 'traffic light': 'a traffic light signal',
-            'fire hydrant': 'a metal fire hydrant on a sidewalk', 'stop sign': 'a red octagonal stop sign',
-            'parking meter': 'a coin-operated parking meter', 'bench': 'a sitting bench in a park or street',
-            'bird': 'a flying or perched bird animal', 'cat': 'a domestic feline cat pet',
-            'dog': 'a domestic canine dog pet', 'horse': 'a large equine horse animal',
-            'sheep': 'a woolly sheep animal', 'cow': 'a large bovine cow animal',
-            'elephant': 'a large wild elephant with a trunk', 'bear': 'a large wild bear animal',
-            'zebra': 'a wild zebra animal with black and white stripes', 'giraffe': 'a tall wild giraffe animal with a long neck',
-            'backpack': 'a wearable backpack bag', 'umbrella': 'a handheld umbrella for rain or sun',
-            'handbag': 'a carried handbag or purse', 'tie': 'a necktie worn with a shirt',
-            'suitcase': 'a luggage suitcase for travel', 'frisbee': 'a flying plastic frisbee disc',
-            'skis': 'a pair of long snow skis', 'snowboard': 'a wide flat snowboard for snow',
-            'sports ball': 'a round sports ball for playing games', 'kite': 'a flying kite in the sky',
-            'baseball bat': 'a wooden or metal baseball bat', 'baseball glove': 'a leather baseball glove',
-            'skateboard': 'a wheeled skateboard for riding', 'surfboard': 'a long surfboard for riding waves',
-            'tennis racket': 'a stringed tennis racket', 'bottle': 'a cylindrical liquid container bottle',
-            'wine glass': 'a glass goblet for wine', 'cup': 'a drinking cup or mug',
-            'fork': 'a metal eating fork', 'knife': 'a sharp cutting knife',
-            'spoon': 'a metal eating spoon', 'bowl': 'a round eating bowl',
-            'banana': 'a yellow curved banana fruit', 'apple': 'a round red or green apple fruit',
-            'sandwich': 'a bread sandwich with fillings', 'orange': 'a round orange citrus fruit',
-            'broccoli': 'a green broccoli vegetable', 'carrot': 'a long orange carrot vegetable',
-            'hot dog': 'a hot dog sausage in a bun', 'pizza': 'a circular baked pizza with toppings',
-            'donut': 'a sweet fried donut pastry', 'cake': 'a baked sweet cake dessert',
-            'chair': 'a sitting chair piece of furniture', 'couch': 'a multi-person seating couch or sofa',
-            'potted plant': 'a green plant in a pot', 'bed': 'a sleeping bed with pillows and blankets',
-            'dining table': 'a table used for eating meals', 'toilet': 'a ceramic bathroom toilet',
-            'tv': 'a television screen or monitor', 'laptop': 'a portable laptop computer',
-            'mouse': 'a computer mouse peripheral', 'remote': 'a handheld remote control',
-            'keyboard': 'a computer typing keyboard', 'cell phone': 'a mobile cellular phone',
-            'microwave': 'a microwave oven appliance', 'oven': 'a baking oven appliance',
-            'toaster': 'a bread toaster appliance', 'sink': 'a water sink basin',
-            'refrigerator': 'a large cold refrigerator appliance', 'book': 'a bound paper reading book',
-            'clock': 'a time-telling clock', 'vase': 'a decorative vase for holding flowers',
-            'scissors': 'a pair of cutting scissors', 'teddy bear': 'a soft stuffed teddy bear toy',
-            'hair drier': 'a handheld hair drier appliance', 'toothbrush': 'a bristled toothbrush for cleaning teeth'
-        }
-        
-        self.category_list = [COCO_SEMANTICS.get(name, f"a visual of a {name} object") for name in raw_categories]
+        # --- REVERTED TO SHORT SEMANTICS (FAIR GROUND TRAINING) ---
+        self.category_list = [self.all_categories[k] for k in sorted(self.all_categories.keys())]
         # ---------------------------------------------------------
+        
         self.category_ids = {v: k for k, v in self.all_categories.items()}
         self.label2catid = {
-            k: self.category_ids[raw_categories[k]] for k, v in enumerate(self.category_list)
+            k: self.category_ids[self.category_list[k]] for k, v in enumerate(self.category_list)
         }
         self.catid2label = {v: k for k, v in self.label2catid.items()}
         self.use_pseudo_box = pseudo_box != ""
@@ -87,7 +44,6 @@ class OVCocoDetection(torchvision.datasets.CocoDetection):
                     self.pseudo_annotations[annotation["image_id"]] = []
                 self.pseudo_annotations[annotation["image_id"]].append(annotation)
         self.prepare = ConvertCocoPolysToMask(return_masks, map=self.catid2label)
-
 
     def __getitem__(self, idx):
         img, target = super(OVCocoDetection, self).__getitem__(idx)
@@ -105,8 +61,8 @@ class OVCocoDetection(torchvision.datasets.CocoDetection):
             
         # --- THESIS: Inject FastSAM Priors into DataLoader (Train + Val) ---
         import os
-        prior_val = f"output/coco2017/sam_priors_val2017/{image_id}.pt"
-        prior_train = f"output/coco2017/sam_priors_train2017/{image_id}.pt"
+        prior_val = f"data/sam_priors/val2017/{image_id}.pt"
+        prior_train = f"data/sam_priors/train2017/{image_id}.pt"
         
         if os.path.exists(prior_val):
             target['sam_proposals'] = torch.load(prior_val)
@@ -147,12 +103,10 @@ class ConvertCocoPolysToMask(object):
         anno = target["annotations"]
         anno = [obj for obj in anno if "iscrowd" not in obj or obj["iscrowd"] == 0]
         boxes = [obj["bbox"] for obj in anno]
-        # guard against no boxes via resizing
         boxes = torch.as_tensor(boxes, dtype=torch.float32).reshape(-1, 4)
         boxes[:, 2:] += boxes[:, :2]
         boxes[:, 0::2].clamp_(min=0, max=w)
         boxes[:, 1::2].clamp_(min=0, max=h)
-        # classes = [obj["category_id"] for obj in anno]
         classes = [
             obj["category_id"] if "category_id" in obj else -i - 1
             for i, obj in enumerate(anno)
@@ -166,10 +120,9 @@ class ConvertCocoPolysToMask(object):
             if "pseudo" in obj:
                 pseudo_mask.append(obj["pseudo"])
             else:
-                pseudo_mask.append(0) # For compatibility, 0 is added by default to indicate that it is not a pseudo label
-
+                pseudo_mask.append(0)
             if "weight" in obj:
-                weight.append(obj["weight"]) # foreground estimation
+                weight.append(obj["weight"]) 
             else:
                 weight.append(1.0)
         classes = torch.tensor(classes, dtype=torch.int64)
@@ -213,12 +166,6 @@ class ConvertCocoPolysToMask(object):
         if keypoints is not None:
             target["keypoints"] = keypoints
 
-        # for conversion to coco api
-        # area = torch.tensor([obj["area"] for obj in anno])
-        # iscrowd = torch.tensor([obj["iscrowd"] if "iscrowd" in obj else 0 for obj in anno])
-        # target["area"] = area[keep]
-        # target["iscrowd"] = iscrowd[keep]
-
         target["orig_size"] = torch.as_tensor([int(h), int(w)])
         target["size"] = torch.as_tensor([int(h), int(w)])
         return image, target
@@ -261,14 +208,15 @@ def build(image_set, args):
     assert root.exists(), f"provided COCO path {root} does not exist"
     mode = "instances"
     if args.label_version=="standard":
+        # --- FIXED TO MATCH YOUR CURRENT REPO STRUCTURE ---
         PATHS = {
             "train": (
-                root / "images/train2017",
-                root / "annotations_trainval2017/annotations" / f"{mode}_train2017_base.json",
+                root / "Images/train2017",
+                root / "Annotations" / f"{mode}_train2017_base.json",
             ),
             "val": (
-                root / "images/val2017",
-                root / "annotations_trainval2017/annotations" / f"{mode}_val2017_basetarget.json",
+                root / "Images/val2017",
+                root / "Annotations" / f"{mode}_val2017_basetarget.json",
             ),
         }
     elif args.label_version == "custom":
