@@ -4,9 +4,10 @@ import torch
 from tqdm import tqdm
 from ultralytics import FastSAM
 
-COCO_JSON = "data/coco2017/annotations_trainval2017/annotations/instances_train2017.json"
-IMAGE_DIR = "data/coco2017/images/train2017/"
-OUTPUT_DIR = "output/coco2017/sam_priors_train2017/"
+# FIXED PATHS
+COCO_JSON = "data/Annotations/instances_train2017_base.json"
+IMAGE_DIR = "data/Images/train2017/"
+OUTPUT_DIR = "data/sam_priors/train2017/"
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 

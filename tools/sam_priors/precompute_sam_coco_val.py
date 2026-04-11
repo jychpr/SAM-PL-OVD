@@ -4,10 +4,10 @@ import torch
 from tqdm import tqdm
 from ultralytics import FastSAM
 
-COCO_JSON = "data/coco2017/annotations_trainval2017/annotations/instances_val2017.json"
-IMAGE_DIR = "data/coco2017/images/val2017/"
-# THESIS FIX: Output strictly to the val folder to match the patched dataloader
-OUTPUT_DIR = "output/coco2017/sam_priors_val2017/"
+# FIXED PATHS
+COCO_JSON = "data/Annotations/instances_val2017_basetarget.json"
+IMAGE_DIR = "data/Images/val2017/"
+OUTPUT_DIR = "data/sam_priors/val2017/"
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
