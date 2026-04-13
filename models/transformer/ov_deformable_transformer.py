@@ -94,44 +94,40 @@ class OVDeformableTransformer(DeformableTransformer):
             enc_outputs_coord_unselected = (self.enc_out_bbox_embed(output_memory) + output_proposals)  
             topk = self.num_queries
             if sam_proposals is not None:
-                # --- THESIS V5: HYBRID RPN (SAM Priors + Native Semantics) ---
-                N = sam_proposals.size(1)
-                enc_boxes = output_proposals.sigmoid()
-                
-                # 1. Match FastSAM boxes to closest DETR encoder points
-                dist = torch.cdist(enc_boxes[..., :2], sam_proposals[..., :2])
-                sam_matched_indices = dist.argmin(dim=1) # [bs, N]
-                
-                # 2. Extract DETR's native high-confidence predictions
-                native_scores = enc_outputs_class_unselected.max(-1)[0]
-                native_indices = torch.topk(native_scores, topk + N, dim=1)[1]
-                
-                # 3. Fuse them cleanly to exactly `topk` (1000 queries)
-                final_indices = torch.zeros((bs, topk), device=native_indices.device, dtype=native_indices.dtype)
-                for b in range(bs):
-                    sam_idx = sam_matched_indices[b]
-                    nat_idx = native_indices[b]
-                    # Filter out native indices that SAM already claimed
-                    valid_native = nat_idx[~torch.isin(nat_idx, sam_idx)]
-                    
-                    # Fill final array
-                    actual_n = min(N, topk)
-                    final_indices[b, :actual_n] = sam_idx[:actual_n]
-                    if topk > actual_n:
-                        final_indices[b, actual_n:] = valid_native[:topk - actual_n]
-                
-                topk_proposals = final_indices
-                
-                # 4. Standard DETR Gather using the Hybrid Indices
+                # --- THESIS V6: DUAL-STREAM QUERY INJECTION ---
+                # 1. Stream A: Native Semantic Seekers (Preserve Encoder Gradients)
+                topk_proposals = torch.topk(enc_outputs_class_unselected.max(-1)[0], topk, dim=1)[1]
                 refpoint_embed_undetach = torch.gather(enc_outputs_coord_unselected, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, 4))
-                refpoint_embed_ = refpoint_embed_undetach.detach()
-                init_box_proposal = torch.gather(output_proposals, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, 4)).sigmoid()
+                refpoint_embed_native = refpoint_embed_undetach.detach()
+                init_box_native = torch.gather(output_proposals, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, 4)).sigmoid()
+                tgt_native_undetach = torch.gather(output_memory, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, self.d_model))
                 
-                tgt_undetach = torch.gather(output_memory, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, self.d_model))
                 if self.embed_init_tgt:
-                    tgt_ = (self.tgt_embed.weight[:, None, :].repeat(1, bs, 1).transpose(0, 1))
+                    tgt_native = self.tgt_embed.weight[:, None, :].repeat(1, bs, 1).transpose(0, 1)
                 else:
-                    tgt_ = tgt_undetach.detach()
+                    tgt_native = tgt_native_undetach.detach()
+
+                # 2. Stream B: Geometric Anchors (FastSAM Priors)
+                # Clamp prevents NaN explosions in inverse_sigmoid for perfect 0 or 1 coordinates
+                sam_boxes = sam_proposals.detach().clamp(1e-5, 1 - 1e-5) 
+                refpoint_embed_sam = inverse_sigmoid(sam_boxes)
+                init_box_sam = sam_boxes
+                
+                # Extract initial content features for SAM boxes from the closest encoder memory
+                enc_boxes = output_proposals.sigmoid().detach()
+                dist = torch.cdist(sam_boxes[..., :2], enc_boxes[..., :2])
+                sam_matched_indices = dist.argmin(dim=-1)
+                tgt_sam_undetach = torch.gather(output_memory, 1, sam_matched_indices.unsqueeze(-1).repeat(1, 1, self.d_model))
+                tgt_sam = tgt_sam_undetach.detach()
+
+                # 3. The Fusion: Concatenate streams rather than replacing
+                refpoint_embed_ = torch.cat([refpoint_embed_native, refpoint_embed_sam], dim=1)
+                init_box_proposal = torch.cat([init_box_native, init_box_sam], dim=1)
+                tgt_ = torch.cat([tgt_native, tgt_sam], dim=1)
+                
+                # Maintain references for two-stage loss calculations
+                tgt_undetach = torch.cat([tgt_native_undetach, tgt_sam_undetach], dim=1)
+                refpoint_embed_undetach = torch.cat([refpoint_embed_undetach, refpoint_embed_sam], dim=1)
                 # -------------------------------------------------------------
             else:
                 topk_proposals = torch.topk(enc_outputs_class_unselected.max(-1)[0], topk, dim=1)[1]
