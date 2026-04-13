@@ -286,13 +286,19 @@ class OV_DQUO(nn.Module):
             ]
         )
         if self.dn_number > 0 and dn_meta is not None:
+            # --- THESIS FIX: Adjust dn_meta to account for the appended SAM queries ---
+            if sam_proposals is not None:
+                # The transformer concatenated N sam_proposals to the end of the query list.
+                # We update the expected query count from 1000 to (1000 + N) for this batch.
+                dn_meta["output_known_lbs_bboxes"]["num_queries"] = self.num_queries + sam_proposals.size(1)
+
             outputs_class, outputs_coord_list = dn_post_process(
                 outputs_class,
                 outputs_coord_list,
                 dn_meta,
                 self.aux_loss,
                 self._set_aux_loss,
-            )
+            )   
         out = {"pred_logits": outputs_class[-1], "pred_boxes": outputs_coord_list[-1]}
         if self.aux_loss:
             out["aux_outputs"] = self._set_aux_loss(outputs_class, outputs_coord_list)
