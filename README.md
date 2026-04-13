@@ -47,9 +47,7 @@ python -m pip install 'git+https://github.com/facebookresearch/detectron2.git' -
 
 To execute the offline SAM prior generation scripts located in tools/sam_priors/, you must install the following:
 ```bash
-pip install segment-anything (or FastSAM equivalent depending on your final prior generator)
-pip install opencv-python
-pip install pycocotools
+pip install ultralytics openpyxl
 ```
 
 # Architectural Overview
@@ -88,5 +86,12 @@ These for the dataset ov-coco, coco2017 images, and also the annotations of orig
 - data/Images/val2017
 - data/Images/test2017
 
-
-
+# How to Run
+## 1. Pre-compute SAM Priors
+```bash
+bash scripts/precompute_priors.sh
+```
+## 2. Train
+```bash
+bash scripts/train_proposed_RN50.sh logs/proposed_r50_fairground
+```
