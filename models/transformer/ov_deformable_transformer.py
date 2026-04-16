@@ -94,40 +94,70 @@ class OVDeformableTransformer(DeformableTransformer):
             enc_outputs_coord_unselected = (self.enc_out_bbox_embed(output_memory) + output_proposals)  
             topk = self.num_queries
             if sam_proposals is not None:
-                # --- THESIS V6: DUAL-STREAM QUERY INJECTION ---
-                # 1. Stream A: Native Semantic Seekers (Preserve Encoder Gradients)
+                # --- THESIS V7: IoU-GUIDED SEMANTIC-GEOMETRIC FUSION ---
+                # 1. Generate Native DETR Queries (Top 1000)
                 topk_proposals = torch.topk(enc_outputs_class_unselected.max(-1)[0], topk, dim=1)[1]
                 refpoint_embed_undetach = torch.gather(enc_outputs_coord_unselected, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, 4))
-                refpoint_embed_native = refpoint_embed_undetach.detach()
                 init_box_native = torch.gather(output_proposals, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, 4)).sigmoid()
                 tgt_native_undetach = torch.gather(output_memory, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, self.d_model))
                 
-                if self.embed_init_tgt:
-                    tgt_native = self.tgt_embed.weight[:, None, :].repeat(1, bs, 1).transpose(0, 1)
-                else:
-                    tgt_native = tgt_native_undetach.detach()
-
-                # 2. Stream B: Geometric Anchors (FastSAM Priors)
-                # Clamp prevents NaN explosions in inverse_sigmoid for perfect 0 or 1 coordinates
-                sam_boxes = sam_proposals.detach().clamp(1e-5, 1 - 1e-5) 
+                # 2. Prepare tensors for in-place fusion (maintaining exactly 1000 queries)
+                fused_init_box = init_box_native.clone()
+                fused_refpoint_embed_undetach = refpoint_embed_undetach.clone()
+                fused_tgt_undetach = tgt_native_undetach.clone()
+                
+                sam_boxes = sam_proposals.detach().clamp(1e-5, 1 - 1e-5)
                 refpoint_embed_sam = inverse_sigmoid(sam_boxes)
-                init_box_sam = sam_boxes
+                enc_all_boxes = output_proposals.sigmoid().detach()
                 
-                # Extract initial content features for SAM boxes from the closest encoder memory
-                enc_boxes = output_proposals.sigmoid().detach()
-                dist = torch.cdist(sam_boxes[..., :2], enc_boxes[..., :2])
-                sam_matched_indices = dist.argmin(dim=-1)
-                tgt_sam_undetach = torch.gather(output_memory, 1, sam_matched_indices.unsqueeze(-1).repeat(1, 1, self.d_model))
-                tgt_sam = tgt_sam_undetach.detach()
+                def box_cxcywh_to_xyxy(x):
+                    x_c, y_c, w, h = x.unbind(-1)
+                    b = [(x_c - 0.5 * w), (y_c - 0.5 * h),
+                         (x_c + 0.5 * w), (y_c + 0.5 * h)]
+                    return torch.stack(b, dim=-1)
 
-                # 3. The Fusion: Concatenate streams rather than replacing
-                refpoint_embed_ = torch.cat([refpoint_embed_native, refpoint_embed_sam], dim=1)
-                init_box_proposal = torch.cat([init_box_native, init_box_sam], dim=1)
-                tgt_ = torch.cat([tgt_native, tgt_sam], dim=1)
+                from torchvision.ops import box_iou
                 
-                # Maintain references for two-stage loss calculations
-                tgt_undetach = torch.cat([tgt_native_undetach, tgt_sam_undetach], dim=1)
-                refpoint_embed_undetach = torch.cat([refpoint_embed_undetach, refpoint_embed_sam], dim=1)
+                for b in range(bs):
+                    b_native_xyxy = box_cxcywh_to_xyxy(init_box_native[b])
+                    b_sam_xyxy = box_cxcywh_to_xyxy(sam_boxes[b])
+                    
+                    # Compute Intersection over Union
+                    ious = box_iou(b_sam_xyxy, b_native_xyxy)
+                    num_sam = b_sam_xyxy.shape[0]
+                    replace_idx = topk - 1 # Start overwriting the lowest confidence garbage queries
+                    
+                    for s in range(num_sam):
+                        max_iou, max_idx = ious[s].max(dim=0)
+                        
+                        if max_iou > 0.6:
+                            # CONDITION A: Spatial Consensus (Fusion)
+                            # Inherit SAM's geometry, keep DETR's semantics
+                            fused_init_box[b, max_idx] = sam_boxes[b, s]
+                            fused_refpoint_embed_undetach[b, max_idx] = refpoint_embed_sam[b, s]
+                        else:
+                            # CONDITION B: Geometric Orphan (Novel Object)
+                            if replace_idx >= 0:
+                                fused_init_box[b, replace_idx] = sam_boxes[b, s]
+                                fused_refpoint_embed_undetach[b, replace_idx] = refpoint_embed_sam[b, s]
+                                
+                                # Pull the closest semantic feature from the dense encoder map
+                                dist = torch.cdist(sam_boxes[b, s:s+1, :2], enc_all_boxes[b, :, :2])
+                                closest_hw_idx = dist.argmin(dim=-1)[0]
+                                fused_tgt_undetach[b, replace_idx] = output_memory[b, closest_hw_idx]
+                                
+                                replace_idx -= 1
+                
+                # 3. Finalize exactly 1000 fused queries
+                init_box_proposal = fused_init_box
+                tgt_undetach = fused_tgt_undetach
+                refpoint_embed_undetach = fused_refpoint_embed_undetach
+                refpoint_embed_ = refpoint_embed_undetach.detach()
+                
+                if self.embed_init_tgt:
+                    tgt_ = self.tgt_embed.weight[:, None, :].repeat(1, bs, 1).transpose(0, 1)
+                else:
+                    tgt_ = tgt_undetach.detach()
                 # -------------------------------------------------------------
             else:
                 topk_proposals = torch.topk(enc_outputs_class_unselected.max(-1)[0], topk, dim=1)[1]

@@ -25,98 +25,13 @@ class OVCocoDetection(torchvision.datasets.CocoDetection):
             k["id"]: k["name"] for k in self.coco.dataset["categories"]
         }
         
-        raw_categories = [self.all_categories[k] for k in sorted(self.all_categories.keys())]
-        
-        # --- THESIS V6: RESTORING LONG SEMANTICS (DESCRIPTIVE PROMPTS) ---
-        COCO_SEMANTICS = {
-            'person': 'a human being with a head, torso, arms, and legs, often wearing clothing',
-            'bicycle': 'a two-wheeled human-powered vehicle with a metal frame, handlebars, pedals, and a seat',
-            'car': 'a four-wheeled motorized vehicle with windows, doors, and a metallic body designed for roads',
-            'motorcycle': 'a heavy two-wheeled motorized vehicle with a seat, an engine, and handlebars',
-            'airplane': 'a large flying vehicle with fixed wings, a tubular fuselage, and engines',
-            'bus': 'a large long motorized vehicle with many windows and seats for transporting multiple passengers',
-            'train': 'a series of connected railway cars moving along a metal track',
-            'truck': 'a large motorized cargo vehicle with a front cab and a flatbed or enclosed trailer',
-            'boat': 'a watercraft with a curved hull designed to float and move across water',
-            'traffic light': 'a traffic light signal',
-            'fire hydrant': 'a metal fire hydrant on a sidewalk',
-            'stop sign': 'a red octagonal stop sign',
-            'parking meter': 'a coin-operated parking meter',
-            'bench': 'a long outdoor seat made of wood or metal designed for multiple people to sit',
-            'bird': 'a feathered flying animal with wings, a beak, and two legs',
-            'cat': 'a small domesticated feline animal with fur, pointed ears, whiskers, and a long tail',
-            'dog': 'a domesticated canine animal with fur, four legs, a snout, and a tail',
-            'horse': 'a large four-legged animal with a mane, hooves, and a long tail, often ridden',
-            'sheep': 'a four-legged farm animal covered in a thick coat of white or grey wool',
-            'cow': 'a large four-legged bovine farm animal with hooves and often horns, known for producing milk',
-            'elephant': 'a massive grey animal with a long flexible trunk, large floppy ears, and tusks',
-            'bear': 'a large heavy mammal with thick fur, a short tail, and sharp claws',
-            'zebra': 'a wild horse-like animal with distinct alternating black and white stripes',
-            'giraffe': 'a tall African animal with a very long neck, long legs, and a patterned spotted coat',
-            'backpack': 'a fabric bag carried on the back with two shoulder straps and zippers',
-            'umbrella': 'a portable circular canopy of fabric on a folding metal frame attached to a central rod',
-            'handbag': 'a medium-to-large bag typically carried by women to hold personal items',
-            'tie': 'a long narrow piece of fabric worn around the neck under a shirt collar',
-            'suitcase': 'a large rectangular piece of luggage with a handle used for carrying clothes',
-            'frisbee': 'a flat circular plastic disc designed to be thrown and caught for sport',
-            'skis': 'a pair of long narrow flat runners worn on the feet for gliding over snow',
-            'snowboard': 'a single wide flat board strapped to the feet for sliding down snow-covered slopes',
-            'sports ball': 'a round sports ball for playing games',
-            'kite': 'a lightweight frame covered with fabric or paper flown in the wind at the end of a long string',
-            'baseball bat': 'a wooden or metal baseball bat',
-            'baseball glove': 'a leather baseball glove',
-            'skateboard': 'a short narrow wooden board with four small wheels mounted underneath',
-            'surfboard': 'a long narrow fiberglass board used for riding ocean waves',
-            'tennis racket': 'a stringed tennis racket',
-            'bottle': 'a narrow-necked glass or plastic container used to hold liquids',
-            'wine glass': 'a glass goblet for wine',
-            'cup': 'a small bowl-shaped container with a handle used for drinking beverages',
-            'fork': 'a metal or plastic utensil with two or more prongs used for eating food',
-            'knife': 'a utensil with a handle and a flat metal blade with a sharp edge',
-            'spoon': 'a utensil consisting of a small shallow oval bowl on a long handle',
-            'bowl': 'a round deep dish or basin used for holding food or liquid',
-            'banana': 'a long curved yellow fruit with a thick peel',
-            'apple': 'a round fruit with red or green skin and a solid whitish interior',
-            'sandwich': 'two pieces of bread with meat, cheese, or other filling placed between them',
-            'orange': 'a round citrus fruit with a tough bright reddish-yellow dimpled rind',
-            'broccoli': 'a green vegetable with a thick stalk and a tree-like flowery head',
-            'carrot': 'a long pointed orange root vegetable',
-            'hot dog': 'a hot dog sausage in a bun',
-            'pizza': 'a round flat piece of dough baked with tomato sauce, cheese, and toppings',
-            'donut': 'a small ring-shaped fried cake often covered in sweet icing or sugar',
-            'cake': 'a sweet baked dessert made from dough or batter, often decorated with frosting',
-            'chair': 'a piece of furniture for one person to sit on, with a back and four legs',
-            'couch': 'a long upholstered piece of furniture for multiple people to sit or lie on',
-            'potted plant': 'a green plant in a pot',
-            'bed': 'a large piece of furniture for sleep or rest, typically with a mattress and frame',
-            'dining table': 'a table used for eating meals',
-            'toilet': 'a ceramic bowl with a hinged seat and a water tank used for disposing of human waste',
-            'tv': 'a rectangular electronic device with a flat screen used for viewing broadcasting',
-            'laptop': 'a portable folding personal computer with a flat screen and a keyboard',
-            'mouse': 'a small hand-held pointing device used to control a computer screen cursor',
-            'remote': 'a small handheld device with buttons used to operate electronic equipment from a distance',
-            'keyboard': 'a flat rectangular panel of physical keys used for typing into a computer',
-            'cell phone': 'a mobile cellular phone',
-            'microwave': 'a box-like electronic oven that cooks or heats food quickly using radiation',
-            'oven': 'an enclosed compartment for cooking and heating food at high temperatures',
-            'toaster': 'an electrical appliance designed to toast sliced bread using heating elements',
-            'sink': 'a fixed basin with a water faucet and a drain used for washing',
-            'refrigerator': 'a large tall appliance with doors that keeps food and drinks cold',
-            'book': 'a written or printed work consisting of pages bound together with a cover',
-            'clock': 'a circular or digital device for measuring and displaying the time',
-            'vase': 'a decorative vertical container often made of glass or ceramic used to hold flowers',
-            'scissors': 'a hand-operated cutting instrument consisting of two pivoted metal blades',
-            'teddy bear': 'a soft stuffed teddy bear toy',
-            'hair drier': 'a handheld hair drier appliance',
-            'toothbrush': 'a small brush with a long handle used for cleaning teeth'
-        }
-        
-        self.category_list = [COCO_SEMANTICS.get(name, f"a visual of a {name} object") for name in raw_categories]
+        # --- REVERTED TO SHORT SEMANTICS (FAIR GROUND TRAINING) ---
+        self.category_list = [self.all_categories[k] for k in sorted(self.all_categories.keys())]
         # ---------------------------------------------------------
         
         self.category_ids = {v: k for k, v in self.all_categories.items()}
         self.label2catid = {
-            k: self.category_ids[raw_categories[k]] for k, v in enumerate(self.category_list)
+            k: self.category_ids[self.category_list[k]] for k, v in enumerate(self.category_list)
         }
         self.catid2label = {v: k for k, v in self.label2catid.items()}
         self.use_pseudo_box = pseudo_box != ""
