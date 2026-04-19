@@ -392,7 +392,6 @@ def sample_feature_rn(
     features,
     args,
     backbone,
-    sam_masks=None,  # <--- NEW: Accept the precomputed SAM masks
     extra_conv=False,
     unflatten=True,
 ):
@@ -412,14 +411,6 @@ def sample_feature_rn(
             spatial_scale=1.0,
             aligned=True,
         )
-        
-        # --- TRIPLE-FILTER: EXPLICIT MASK POOLING (EVAL PHASE) ---
-        if sam_masks is not None:
-            batched_masks = torch.cat(sam_masks, dim=0).unsqueeze(1).float()
-            pooled_masks = F.adaptive_max_pool2d(batched_masks, output_size=(reso, reso))
-            roi_features = roi_features * pooled_masks
-        # ---------------------------------------------------------
-        
         roi_features = backbone[0].layer4(roi_features)
         roi_features = backbone[0].attn_pool(roi_features, None)
     else:
@@ -442,26 +433,27 @@ def sample_feature_rn(
             k_feat.permute(0, 3, 1, 2),
             v_feat.permute(0, 3, 1, 2),
         )
-        grid_size = reso // 2
-        
-        q = torchvision.ops.roi_align(q, rpn_boxes, output_size=(grid_size, grid_size), spatial_scale=1.0, aligned=True)
-        k = torchvision.ops.roi_align(k, rpn_boxes, output_size=(grid_size, grid_size), spatial_scale=1.0, aligned=True)
-        v = torchvision.ops.roi_align(v, rpn_boxes, output_size=(grid_size, grid_size), spatial_scale=1.0, aligned=True)
-
-        # --- TRIPLE-FILTER: EXPLICIT MASK POOLING ---
-        if sam_masks is not None:
-            # sam_masks is expected to be a list of boolean tensors [N, 28, 28] per image
-            # We need to concatenate them to match the batched ROI output [Total_N, 28, 28]
-            batched_masks = torch.cat(sam_masks, dim=0).unsqueeze(1).float() # [Total_N, 1, 28, 28]
-            
-            # Downsample the 28x28 mask to match the 7x7 (grid_size) feature map
-            pooled_masks = F.adaptive_max_pool2d(batched_masks, output_size=(grid_size, grid_size))
-            
-            # Multiply to annihilate background noise (broadcasting across channels)
-            q = q * pooled_masks
-            k = k * pooled_masks
-            v = v * pooled_masks
-        # -------------------------------------------
+        q = torchvision.ops.roi_align(
+            q,
+            rpn_boxes,
+            output_size=(reso // 2, reso // 2),
+            spatial_scale=1.0,
+            aligned=True,
+        )
+        k = torchvision.ops.roi_align(
+            k,
+            rpn_boxes,
+            output_size=(reso // 2, reso // 2),
+            spatial_scale=1.0,
+            aligned=True,
+        )
+        v = torchvision.ops.roi_align(
+            v,
+            rpn_boxes,
+            output_size=(reso // 2, reso // 2),
+            spatial_scale=1.0,
+            aligned=True,
+        )
 
         q, k, v = q.flatten(2), k.flatten(2), v.flatten(2)
         q = q.mean(-1)  # NC
