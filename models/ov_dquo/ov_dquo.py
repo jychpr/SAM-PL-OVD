@@ -349,6 +349,11 @@ class OV_DQUO(nn.Module):
         if not self.training:
             sample_box = outputs_coord_list[-1:]
             roi_feats = []
+            
+            # --- NEW: RETRIEVE MASKS ---
+            mask_list = [self.transformer.current_fused_masks[i] for i in range(self.transformer.current_fused_masks.size(0))] if hasattr(self.transformer, 'current_fused_masks') and self.transformer.current_fused_masks is not None else None
+            # ---------------------------
+
             for coord in sample_box:
                 if "RN" in self.args.backbone:
                     src_feature = ori_clip_features["layer3"] # C4 in ResNet
@@ -359,6 +364,7 @@ class OV_DQUO(nn.Module):
                                            src_feature.tensors,
                                            self.args,
                                            self.backbone,
+                                           sam_masks=mask_list, # <--- NEW: PASS MASKS
                                            extra_conv=True))
                 else:
                     src_feature = ori_clip_features["dense"] # dense feature for ViT

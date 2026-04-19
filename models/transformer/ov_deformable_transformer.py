@@ -95,25 +95,29 @@ class OVDeformableTransformer(DeformableTransformer):
             topk = self.num_queries
             if sam_proposals is not None:
                 # --- THESIS V7: IoU-GUIDED SEMANTIC-GEOMETRIC FUSION ---
-                # 1. Generate Native DETR Queries (Top 1000)
                 topk_proposals = torch.topk(enc_outputs_class_unselected.max(-1)[0], topk, dim=1)[1]
                 refpoint_embed_undetach = torch.gather(enc_outputs_coord_unselected, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, 4))
                 init_box_native = torch.gather(output_proposals, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, 4)).sigmoid()
                 tgt_native_undetach = torch.gather(output_memory, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, self.d_model))
                 
-                # 2. Prepare tensors for in-place fusion (maintaining exactly 1000 queries)
+                # 2. Prepare tensors for in-place fusion
                 fused_init_box = init_box_native.clone()
                 fused_refpoint_embed_undetach = refpoint_embed_undetach.clone()
                 fused_tgt_undetach = tgt_native_undetach.clone()
                 
+                # --- MASK ALIGNMENT TENSOR (Initialize full 1s for unmapped queries) ---
+                fused_masks = None
+                if targets is not None and "sam_masks" in targets[0]:
+                    fused_masks = torch.ones((bs, topk, 28, 28), device=init_box_native.device, dtype=torch.bool)
+                # -----------------------------------------------------------------------
+
                 sam_boxes = sam_proposals.detach().clamp(1e-5, 1 - 1e-5)
                 refpoint_embed_sam = inverse_sigmoid(sam_boxes)
                 enc_all_boxes = output_proposals.sigmoid().detach()
                 
                 def box_cxcywh_to_xyxy(x):
                     x_c, y_c, w, h = x.unbind(-1)
-                    b = [(x_c - 0.5 * w), (y_c - 0.5 * h),
-                         (x_c + 0.5 * w), (y_c + 0.5 * h)]
+                    b = [(x_c - 0.5 * w), (y_c - 0.5 * h), (x_c + 0.5 * w), (y_c + 0.5 * h)]
                     return torch.stack(b, dim=-1)
 
                 from torchvision.ops import box_iou
@@ -122,31 +126,33 @@ class OVDeformableTransformer(DeformableTransformer):
                     b_native_xyxy = box_cxcywh_to_xyxy(init_box_native[b])
                     b_sam_xyxy = box_cxcywh_to_xyxy(sam_boxes[b])
                     
-                    # Compute Intersection over Union
                     ious = box_iou(b_sam_xyxy, b_native_xyxy)
                     num_sam = b_sam_xyxy.shape[0]
-                    replace_idx = topk - 1 # Start overwriting the lowest confidence garbage queries
+                    replace_idx = topk - 1 
                     
                     for s in range(num_sam):
                         max_iou, max_idx = ious[s].max(dim=0)
                         
                         if max_iou > 0.6:
-                            # CONDITION A: Spatial Consensus (Fusion)
-                            # Inherit SAM's geometry, keep DETR's semantics
                             fused_init_box[b, max_idx] = sam_boxes[b, s]
                             fused_refpoint_embed_undetach[b, max_idx] = refpoint_embed_sam[b, s]
+                            if fused_masks is not None:
+                                fused_masks[b, max_idx] = targets[b]['sam_masks'][s] # <--- Map the mask
                         else:
-                            # CONDITION B: Geometric Orphan (Novel Object)
                             if replace_idx >= 0:
                                 fused_init_box[b, replace_idx] = sam_boxes[b, s]
                                 fused_refpoint_embed_undetach[b, replace_idx] = refpoint_embed_sam[b, s]
+                                if fused_masks is not None:
+                                    fused_masks[b, replace_idx] = targets[b]['sam_masks'][s] # <--- Map the mask
                                 
-                                # Pull the closest semantic feature from the dense encoder map
                                 dist = torch.cdist(sam_boxes[b, s:s+1, :2], enc_all_boxes[b, :, :2])
                                 closest_hw_idx = dist.argmin(dim=-1)[0]
                                 fused_tgt_undetach[b, replace_idx] = output_memory[b, closest_hw_idx]
-                                
                                 replace_idx -= 1
+                
+                # --- NEW: SAVE MASKS TO INSTANCE ---
+                self.current_fused_masks = fused_masks
+                # -----------------------------------
                 
                 # 3. Finalize exactly 1000 fused queries
                 init_box_proposal = fused_init_box
@@ -259,11 +265,15 @@ class OVDeformableTransformer(DeformableTransformer):
         sizes = [((1 - m[0].float()).sum(), (1 - m[:, 0].float()).sum()) for m in src_feature.decompose()[1]]
         with torch.no_grad():
             if "RN" in self.args.backbone:
+                # --- NEW: EXTRACT MASKS ---
+                mask_list = [self.current_fused_masks[i] for i in range(self.current_fused_masks.size(0))] if hasattr(self, 'current_fused_masks') and self.current_fused_masks is not None else None
+                # --------------------------
                 roi_features=sample_feature_rn(sizes,
                                            region_proposals.sigmoid(),
                                            src_feature.tensors,
                                            self.args,
-                                           backbone)
+                                           backbone,
+                                           sam_masks=mask_list) # <--- NEW: PASS MASKS
             else:
                 roi_features = sample_feature_vit(sizes,
                                             region_proposals.sigmoid(),
