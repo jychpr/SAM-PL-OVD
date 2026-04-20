@@ -507,19 +507,32 @@ def get_match_pseudo_idx(query,targets,thr=0.5):
     mask=[]
     proposal=query.clone()
     proposal=box_ops.box_cxcywh_to_xyxy(proposal.flatten(0, 1))
+    
     for t in targets:
-        pseudo_mask=t['pseudo_mask'].to(torch.bool)
-        bbox=box_ops.box_cxcywh_to_xyxy(t['boxes'][pseudo_mask])
+        # --- V8.1: FASTSAM WILDCARD INJECTION (Equation 6) ---
+        # Route the IoU matchmaker to use FastSAM deterministic priors
+        if 'sam_proposals' in t and t['sam_proposals'] is not None:
+            bbox = box_ops.box_cxcywh_to_xyxy(t['sam_proposals'])
+        else:
+            # Legacy OLN fallback (Should not be hit in V8.1)
+            pseudo_mask=t['pseudo_mask'].to(torch.bool)
+            bbox=box_ops.box_cxcywh_to_xyxy(t['boxes'][pseudo_mask])
+        # -----------------------------------------------------
+        
         pseudo_gt_box.append(bbox)
         sizes.append(len(bbox))
+        
     pseudo_gt_box = torch.cat(pseudo_gt_box,dim=0)
     ious = box_ops.box_iou(proposal,pseudo_gt_box)[0]
     ious=ious.view(bs,nq,-1)
+    
     for i, iou in enumerate(ious.split(sizes, -1)):
         if iou.numel()>0:
             bs_i_iou=iou[i]
             bs_i_miou=bs_i_iou.max(-1)[0]
+            # If the DETR query overlaps with FastSAM by > 50%, trigger the Wildcard mask
             mask.append(bs_i_miou>thr)
         else:
             mask.append(torch.zeros(nq,dtype=torch.bool,device=device))
+            
     return torch.stack(mask,dim=0)
