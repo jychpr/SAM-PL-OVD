@@ -168,11 +168,28 @@ def targets_preprocess(targets):
     new_target=[]
     for target in targets:
         new_target_i=copy.deepcopy(target)
-        pseudo_mask=new_target_i['pseudo_mask'].to(torch.bool)
-        new_target_i['boxes']=new_target_i['boxes'][pseudo_mask]
-        new_target_i['labels']=new_target_i['labels'][pseudo_mask]
-        new_target_i['weight']=new_target_i['weight'][pseudo_mask]
+        
+        # --- V8.1: FASTSAM DTQT INJECTION ---
+        # Intercept legacy OLN pseudo_mask and force DTQT to denoise against FastSAM priors.
+        if 'sam_proposals' in new_target_i and new_target_i['sam_proposals'] is not None:
+            sam_boxes = new_target_i['sam_proposals']
+            num_sam = sam_boxes.shape[0]
+            
+            new_target_i['boxes'] = sam_boxes
+            # Assign -1 so the DTQT downstream logic (m[m==-1] = num_classes-1) 
+            # explicitly maps these to the Wildcard text embedding (tow).
+            new_target_i['labels'] = torch.full((num_sam,), -1, dtype=torch.int64, device=sam_boxes.device)
+            new_target_i['weight'] = torch.ones((num_sam,), dtype=torch.float32, device=sam_boxes.device)
+        else:
+            # Fallback (Should not be hit in V8)
+            pseudo_mask=new_target_i['pseudo_mask'].to(torch.bool)
+            new_target_i['boxes']=new_target_i['boxes'][pseudo_mask]
+            new_target_i['labels']=new_target_i['labels'][pseudo_mask]
+            new_target_i['weight']=new_target_i['weight'][pseudo_mask]
+        # ------------------------------------
+        
         new_target.append(new_target_i)
+        
     # If there is no pseudo annotation, use a real annotation for training
     if sum([len(target['labels']) for target in new_target])==0:
         for i,target in enumerate(targets):
